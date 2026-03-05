@@ -16,6 +16,16 @@ NC='\033[0m' # No Color
 
 # --- HELPER FUNCTIONS ---
 
+print_header() {
+    printf '%b\n' "${CYAN}______  ____________________________________________________${NC}"
+    printf '%b\n' "${CYAN}___   |/  /___  _/_  ___/_  ___/___  _/__  __ \\___  _/__    |${NC}"
+    printf '%b\n' "${CYAN}__  /|_/ / __  / _____ \\_____ \\ __  / __  /_/ /__  / __  /| |${NC}"
+    printf '%b\n' "${CYAN}_  /  / / __/ /  ____/ /____/ /__/ /  _  _, _/__/ /  _  ___ |${NC}"
+    printf '%b\n' "${CYAN}/_/  /_/  /___/  /____/ /____/ /___/  /_/ |_| /___/  /_/  |_|${NC}"
+    printf '%b\n' "${CYAN}                                                             v2${NC}"
+    printf '%b\n' "${GREEN}NGINX MANAGER${NC}"
+}
+
 update_domain() {
     DOMAIN=$1
     AVAIL="/etc/nginx/sites-available/$DOMAIN"
@@ -127,14 +137,12 @@ EOF
 # --- MAIN MENU UI ---
 
 clear
-echo -e "${BLUE}=================================================================${NC}"
-echo -e "${BLUE}               NGINX MASTER MANAGER (nx-manager)                 ${NC}"
-echo -e "${BLUE}=================================================================${NC}"
-echo "1) Update / Reload Server Nginx (Synginx)"
-echo "2) Delete Server Nginx (Delginx)"
-echo "3) Insert / Create New Domain"
-echo "4) Exit"
-echo -e "${BLUE}=================================================================${NC}"
+print_header
+echo
+echo -e "${BLUE}1)${NC} Update / Reload Server Nginx (Synginx)"
+echo -e "${BLUE}2)${NC} Delete Server Nginx (Delginx)"
+echo -e "${BLUE}3)${NC} Insert / Create New Domain"
+echo -e "${BLUE}4)${NC} Exit"
 read -p "Select an option [1-4]: " OPTION
 
 case $OPTION in

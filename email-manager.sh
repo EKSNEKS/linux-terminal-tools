@@ -2,11 +2,33 @@
 # 🛠️ THE ULTIMATE EMAIL AUDIT - THE "MISSIRIA" VERSION (FINAL FIX)
 # Usage: ./audit_email.sh contact@sabrina-missiria-group.com
 
+if [[ -t 1 ]]; then
+    GREEN=$'\033[0;32m'
+    CYAN=$'\033[0;36m'
+    NC=$'\033[0m'
+else
+    GREEN=""
+    CYAN=""
+    NC=""
+fi
+
+print_header() {
+    printf '%b\n' "${CYAN}______  ____________________________________________________${NC}"
+    printf '%b\n' "${CYAN}___   |/  /___  _/_  ___/_  ___/___  _/__  __ \\___  _/__    |${NC}"
+    printf '%b\n' "${CYAN}__  /|_/ / __  / _____ \\_____ \\ __  / __  /_/ /__  / __  /| |${NC}"
+    printf '%b\n' "${CYAN}_  /  / / __/ /  ____/ /____/ /__/ /  _  _, _/__/ /  _  ___ |${NC}"
+    printf '%b\n' "${CYAN}/_/  /_/  /___/  /____/ /____/ /___/  /_/ |_| /___/  /_/  |_|${NC}"
+    printf '%b\n' "${CYAN}                                                             v2${NC}"
+    printf '%b\n' "${GREEN}EMAIL MANAGER${NC}"
+}
+
 EMAIL=$1
 SERVER_IP="81.17.98.31"
 
+print_header
+
 if [ -z "$EMAIL" ]; then
-    echo "Usage: ./audit_email.sh user@domain.com"
+    echo "Usage: ./email-manager.sh user@domain.com"
     exit 1
 fi
 

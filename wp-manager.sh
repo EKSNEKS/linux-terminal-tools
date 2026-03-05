@@ -10,6 +10,23 @@ DEFAULT_BACKUP_DIR="${DEFAULT_BACKUP_DIR:-/tmp}"
 
 WP_DB_NAME=""
 WP_PREFIX=""
+SELECTED_DB=""
+
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[0;33m'
+    BLUE=$'\033[0;34m'
+    CYAN=$'\033[0;36m'
+    NC=$'\033[0m'
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    BLUE=""
+    CYAN=""
+    NC=""
+fi
 
 log() {
     printf '%s\n' "$*"
@@ -129,13 +146,127 @@ require_wp_tables() {
     fi
 }
 
+print_header() {
+    printf '%b\n' "${CYAN}______  ____________________________________________________${NC}"
+    printf '%b\n' "${CYAN}___   |/  /___  _/_  ___/_  ___/___  _/__  __ \\___  _/__    |${NC}"
+    printf '%b\n' "${CYAN}__  /|_/ / __  / _____ \\_____ \\ __  / __  /_/ /__  / __  /| |${NC}"
+    printf '%b\n' "${CYAN}_  /  / / __/ /  ____/ /____/ /__/ /  _  _, _/__/ /  _  ___ |${NC}"
+    printf '%b\n' "${CYAN}/_/  /_/  /___/  /____/ /____/ /___/  /_/ |_| /___/  /_/  |_|${NC}"
+    printf '%b\n' "${CYAN}                                                             v2${NC}"
+    printf '%b\n' "${GREEN}WORDPRESS DATABASE MANAGER${NC}"
+}
+
+choose_database_by_number() {
+    local -a db_list=()
+    local db_name choice index
+
+    while IFS= read -r db_name; do
+        [[ -n "$db_name" ]] && db_list+=("$db_name")
+    done < <(
+        mysql_exec -N -s -e "SHOW DATABASES;" | grep -vE '^(information_schema|performance_schema|mysql|sys)$'
+    )
+
+    if ((${#db_list[@]} == 0)); then
+        error "No non-system databases found."
+        return 1
+    fi
+
+    log ""
+    log "${BLUE}Available Databases:${NC}"
+    for index in "${!db_list[@]}"; do
+        printf '%b[%2d]%b %s\n' "$YELLOW" "$((index + 1))" "$NC" "${db_list[$index]}"
+    done
+
+    read -r -p "Select database number: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+        error "Invalid selection."
+        return 1
+    fi
+
+    index=$((choice - 1))
+    if ((index < 0 || index >= ${#db_list[@]})); then
+        error "Selection out of range."
+        return 1
+    fi
+
+    SELECTED_DB="${db_list[$index]}"
+    log "Selected database: ${GREEN}${SELECTED_DB}${NC}"
+}
+
+show_post_details_where() {
+    local where_clause="$1"
+    local label="$2"
+    local posts_table rows
+    local id title post_type post_status count=0
+
+    posts_table="$(quote_identifier "${WP_PREFIX}posts")"
+    rows="$(
+        mysql_exec_db "$WP_DB_NAME" -N -B -e "
+            SELECT
+                ID,
+                COALESCE(NULLIF(post_title, ''), '(no title)') AS post_title,
+                post_type,
+                post_status
+            FROM ${posts_table}
+            WHERE ${where_clause}
+            ORDER BY ID;
+        "
+    )"
+
+    if [[ -z "$rows" ]]; then
+        log "${label}: no matching posts."
+        return 1
+    fi
+
+    log "${label}:"
+    while IFS=$'\t' read -r id title post_type post_status; do
+        log " - ID ${id} | ${post_type}/${post_status} | ${title}"
+        count=$((count + 1))
+    done <<< "$rows"
+    log "Total posts listed: ${count}"
+    return 0
+}
+
+show_comment_details_where() {
+    local where_clause="$1"
+    local label="$2"
+    local comments_table posts_table rows
+    local comment_id post_id post_title status count=0
+
+    comments_table="$(quote_identifier "${WP_PREFIX}comments")"
+    posts_table="$(quote_identifier "${WP_PREFIX}posts")"
+    rows="$(
+        mysql_exec_db "$WP_DB_NAME" -N -B -e "
+            SELECT
+                c.comment_ID,
+                c.comment_post_ID,
+                COALESCE(NULLIF(p.post_title, ''), '(no title)') AS post_title,
+                c.comment_approved
+            FROM ${comments_table} c
+            LEFT JOIN ${posts_table} p ON p.ID = c.comment_post_ID
+            WHERE ${where_clause}
+            ORDER BY c.comment_ID;
+        "
+    )"
+
+    if [[ -z "$rows" ]]; then
+        log "${label}: no matching comments."
+        return 1
+    fi
+
+    log "${label}:"
+    while IFS=$'\t' read -r comment_id post_id post_title status; do
+        log " - Comment ${comment_id} | Post ${post_id} | ${status} | ${post_title}"
+        count=$((count + 1))
+    done <<< "$rows"
+    log "Total comments listed: ${count}"
+    return 0
+}
+
 get_wp_context() {
     local db_name prefix
-    read -r -p "Enter WordPress database name: " db_name
-    [[ -z "$db_name" ]] && {
-        error "Database name is required."
-        return 1
-    }
+    choose_database_by_number || return 1
+    db_name="$SELECTED_DB"
     require_database "$db_name" || return 1
 
     read -r -p "Enter WordPress table prefix (e.g., wp_): " prefix
@@ -170,14 +301,18 @@ wp_domain_migration() {
         return
     }
 
+    old_escaped="$(sql_escape_literal "$old_domain")"
+    new_escaped="$(sql_escape_literal "$new_domain")"
+
+    show_post_details_where \
+        "INSTR(guid, '${old_escaped}') > 0 OR INSTR(post_content, '${old_escaped}') > 0" \
+        "Posts that will be updated (guid/post_content)"
+
     maybe_backup_wp_db || return
     confirm "Proceed with full WordPress domain migration?" || {
         log "Aborted."
         return
     }
-
-    old_escaped="$(sql_escape_literal "$old_domain")"
-    new_escaped="$(sql_escape_literal "$new_domain")"
 
     local options_table posts_table postmeta_table
     options_table="$(quote_identifier "${WP_PREFIX}options")"
@@ -240,14 +375,21 @@ wp_replace_post_content() {
     }
     read -r -p "Replace with: " replace_text
 
+    search_escaped="$(sql_escape_literal "$search_text")"
+    replace_escaped="$(sql_escape_literal "$replace_text")"
+
+    if ! show_post_details_where \
+        "INSTR(post_content, '${search_escaped}') > 0" \
+        "Posts that will be updated in post_content"; then
+        log "No post_content rows matched '${search_text}'."
+        return
+    fi
+
     maybe_backup_wp_db || return
     confirm "Proceed with post_content replacement?" || {
         log "Aborted."
         return
     }
-
-    search_escaped="$(sql_escape_literal "$search_text")"
-    replace_escaped="$(sql_escape_literal "$replace_text")"
 
     local posts_table changed_rows
     posts_table="$(quote_identifier "${WP_PREFIX}posts")"
@@ -279,6 +421,14 @@ wp_remove_param_in_post_content() {
         return
     }
 
+    param_escaped="$(sql_escape_literal "$param_to_remove")"
+    if ! show_post_details_where \
+        "INSTR(post_content, '${param_escaped}') > 0" \
+        "Posts that contain '${param_to_remove}' in post_content"; then
+        log "No post_content rows matched parameter '${param_to_remove}'."
+        return
+    fi
+
     maybe_backup_wp_db || return
     confirm "Proceed with post_content link cleanup for '${param_to_remove}'?" || {
         log "Aborted."
@@ -287,7 +437,6 @@ wp_remove_param_in_post_content() {
 
     local posts_table before_count after_count
     posts_table="$(quote_identifier "${WP_PREFIX}posts")"
-    param_escaped="$(sql_escape_literal "$param_to_remove")"
 
     before_count="$(
         mysql_exec_db "$WP_DB_NAME" -N -s -e "
@@ -440,6 +589,12 @@ wp_clear_transients() {
 wp_delete_revisions() {
     get_wp_context || return
     require_wp_tables posts || return
+
+    if ! show_post_details_where "post_type='revision'" "Post revisions selected for deletion"; then
+        log "No revisions found."
+        return
+    fi
+
     maybe_backup_wp_db || return
 
     confirm "Delete all post revisions?" || {
@@ -463,6 +618,19 @@ wp_delete_revisions() {
 wp_cleanup_trash_and_spam() {
     get_wp_context || return
     require_wp_tables posts comments || return
+
+    local has_posts=0 has_comments=0
+    if show_post_details_where "post_status IN ('trash', 'auto-draft')" "Posts selected for deletion"; then
+        has_posts=1
+    fi
+    if show_comment_details_where "c.comment_approved IN ('spam', 'trash')" "Comments selected for deletion"; then
+        has_comments=1
+    fi
+    if ((has_posts == 0 && has_comments == 0)); then
+        log "No trash/auto-draft posts or spam/trash comments found."
+        return
+    fi
+
     maybe_backup_wp_db || return
 
     confirm "Delete trash/auto-draft posts and spam/trash comments?" || {
@@ -597,6 +765,11 @@ wp_optimize_tables() {
 wp_popular_maintenance_bundle() {
     get_wp_context || return
     require_wp_tables options posts comments || return
+
+    show_post_details_where "post_type='revision'" "Revisions selected for deletion"
+    show_post_details_where "post_status IN ('trash', 'auto-draft')" "Trash/auto-draft posts selected for deletion"
+    show_comment_details_where "c.comment_approved IN ('spam', 'trash')" "Spam/trash comments selected for deletion"
+
     maybe_backup_wp_db || return
 
     confirm "Run maintenance bundle (transients, revisions, trash/spam, orphans, optimize)?" || {
@@ -721,19 +894,20 @@ wp_popular_maintenance_bundle() {
 }
 
 show_menu() {
+    clear 2>/dev/null || true
+    print_header
     log ""
-    log "--- WORDPRESS DATABASE MANAGER ---"
-    log "1) Full domain migration (siteurl/home/guid/content/postmeta)"
-    log "2) Search & replace in post_content"
-    log "3) Remove query parameter in post_content links"
-    log "4) Set siteurl + home only"
-    log "5) Clear transients"
-    log "6) Delete post revisions"
-    log "7) Clean trash posts + spam comments"
-    log "8) Cleanup orphan metadata/relationships"
-    log "9) Optimize all WP tables"
-    log "10) Popular maintenance bundle"
-    log "11) Exit"
+    log "${BLUE}1)${NC} Full domain migration (siteurl/home/guid/content/postmeta)"
+    log "${BLUE}2)${NC} Search & replace in post_content"
+    log "${BLUE}3)${NC} Remove query parameter in post_content links"
+    log "${BLUE}4)${NC} Set siteurl + home only"
+    log "${BLUE}5)${NC} Clear transients"
+    log "${BLUE}6)${NC} Delete post revisions"
+    log "${BLUE}7)${NC} Clean trash posts + spam comments"
+    log "${BLUE}8)${NC} Cleanup orphan metadata/relationships"
+    log "${BLUE}9)${NC} Optimize all WP tables"
+    log "${BLUE}10)${NC} Popular maintenance bundle"
+    log "${BLUE}11)${NC} Exit"
 }
 
 main() {

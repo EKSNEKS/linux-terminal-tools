@@ -9,12 +9,38 @@ MYSQLDUMP_BIN="${MYSQLDUMP_BIN:-mysqldump}"
 DEFAULT_BACKUP_DIR="${DEFAULT_BACKUP_DIR:-/tmp}"
 DEFAULT_EXPORT_PATH="${DEFAULT_EXPORT_PATH:-/home/missiria/dump.sql}"
 
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[0;33m'
+    BLUE=$'\033[0;34m'
+    CYAN=$'\033[0;36m'
+    NC=$'\033[0m'
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    BLUE=""
+    CYAN=""
+    NC=""
+fi
+
 log() {
     printf '%s\n' "$*"
 }
 
 error() {
-    printf 'Error: %s\n' "$*" >&2
+    printf '%b\n' "${RED}Error: $*${NC}" >&2
+}
+
+print_header() {
+    printf '%b\n' "${CYAN}______  ____________________________________________________${NC}"
+    printf '%b\n' "${CYAN}___   |/  /___  _/_  ___/_  ___/___  _/__  __ \\___  _/__    |${NC}"
+    printf '%b\n' "${CYAN}__  /|_/ / __  / _____ \\_____ \\ __  / __  /_/ /__  / __  /| |${NC}"
+    printf '%b\n' "${CYAN}_  /  / / __/ /  ____/ /____/ /__/ /  _  _, _/__/ /  _  ___ |${NC}"
+    printf '%b\n' "${CYAN}/_/  /_/  /___/  /____/ /____/ /___/  /_/ |_| /___/  /_/  |_|${NC}"
+    printf '%b\n' "${CYAN}                                                             v2${NC}"
+    printf '%b\n' "${GREEN}DATABASE MANAGER${NC}"
 }
 
 confirm() {
@@ -411,17 +437,19 @@ export_database() {
 }
 
 show_main_menu() {
+    clear 2>/dev/null || true
+    print_header
     log ""
-    log "--- Master Database & Server Utility ---"
+    log "${BLUE}--- Master Database & Server Utility ---${NC}"
     mysql_exec -e "SHOW DATABASES;" || error "Could not list databases."
-    log "----------------------------------------"
-    log "1) CLEANUP Tables inside a database (Prefix or Plugins)"
-    log "2) DROP an entire database"
-    log "3) SEARCH & REPLACE text across ALL tables (Global)"
-    log "4) LAUNCH WORDPRESS MANAGER (wp-manager.sh)"
-    log "5) RENAME Physical Files in a Directory (e.g., Media Uploads)"
-    log "6) EXPORT a Database (Quick Select by Number)"
-    log "7) EXIT"
+    log "${BLUE}----------------------------------------${NC}"
+    log "${BLUE}1)${NC} CLEANUP Tables inside a database (Prefix or Plugins)"
+    log "${BLUE}2)${NC} DROP an entire database"
+    log "${BLUE}3)${NC} SEARCH & REPLACE text across ALL tables (Global)"
+    log "${BLUE}4)${NC} LAUNCH WORDPRESS MANAGER (wp-manager.sh)"
+    log "${BLUE}5)${NC} RENAME Physical Files in a Directory (e.g., Media Uploads)"
+    log "${BLUE}6)${NC} EXPORT a Database (Quick Select by Number)"
+    log "${BLUE}7)${NC} EXIT"
 }
 
 main() {
