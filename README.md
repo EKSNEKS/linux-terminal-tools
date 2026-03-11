@@ -18,6 +18,7 @@ All scripts include a consistent CLI header/UI and are intended for Linux server
 | `db-manager.sh` | Generic DB operations (cleanup, drop, global replace, export, file rename, WP manager launcher) | Yes | `root`/DB admin |
 | `wp-manager.sh` | WordPress-focused DB operations (migration, content cleanup, maintenance bundle) | Yes | `root`/DB admin |
 | `wp-cron-master.sh` | Trigger `wp-cron.php` and optionally force WP updates via WP-CLI in memory-safe mode | No (argument driven) | `root`/sudo |
+| `site-auto-backup.sh` | Backup active Nginx sites/apps rooted in `/var/www` with files archive and optional WordPress DB dump | No | `root`/DB admin |
 | `nx-manager.sh` | Nginx vhost create/update/delete + config test/reload | Yes | `root` |
 | `email-manager.sh` | Mail alias + Maildir permission audit for one email account | No (email argument) | `root`/sudo |
 
@@ -35,7 +36,7 @@ All scripts include a consistent CLI header/UI and are intended for Linux server
 
 ```bash
 cd /Users/missiria/Projects/EKSNEKS/TOOLS/linux-terminal-tools
-chmod +x *.sh
+chmod +x *.sh batches/*.sh
 ```
 
 Run scripts:
@@ -46,6 +47,7 @@ Run scripts:
 ./nx-manager.sh
 ./email-manager.sh contact@example.com
 ./wp-cron-master.sh all
+./batches/site-auto-backup.sh
 ```
 
 ## Script Usage
@@ -116,6 +118,30 @@ Behavior:
 - In `updates` mode, script exits with error if updates cannot run.
 - Uses memory-safe default:
   - `WP_CLI_PHP_ARGS="-d memory_limit=256M"` (override supported)
+
+### `site-auto-backup.sh`
+
+Usage:
+
+```bash
+./batches/site-auto-backup.sh
+```
+
+Behavior:
+- Reads active `root` + `server_name` blocks from `/etc/nginx/sites-enabled`
+- Keeps only active roots under `/var/www`
+- Creates one run directory inside `BACKUP_BASE_DIR` and one subdirectory per active site
+- Stores `files.tar.gz` for every active root
+- If `wp-config.php` exists, extracts `DB_NAME` and stores a compressed MySQL dump
+- Keeps only the latest backup run directories and removes older ones automatically
+- Writes `backup-info.txt` metadata per site and prints success, failure, and skipped summaries
+
+Environment overrides:
+- `DB_USER` (default: `root`)
+- `MYSQL_BIN` (default: `mysql`)
+- `MYSQLDUMP_BIN` (default: `mysqldump`)
+- `BACKUP_BASE_DIR` (default: `/var/backups/missiria-auto`)
+- `BACKUP_RETENTION_RUNS` (default: `15`)
 
 ### `nx-manager.sh`
 
