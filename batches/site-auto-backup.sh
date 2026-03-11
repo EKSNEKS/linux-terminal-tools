@@ -29,7 +29,8 @@ declare -A ROOT_DOMAINS=()
 declare -A ROOT_SOURCE=()
 declare -A ROOT_SEEN=()
 
-declare -a SUCCESS_SITES=()
+declare -a FULL_BACKUP_SITES=()
+declare -a FILES_BACKUP_SITES=()
 declare -a FAILED_SITES=()
 declare -a SKIPPED_SITES=()
 declare -a REMOVED_BACKUP_RUNS=()
@@ -341,7 +342,11 @@ backup_site() {
     duration=$((site_end - site_start))
 
     if [[ "$status_ok" -eq 1 ]]; then
-        SUCCESS_SITES+=("$label | ${root} | Files: ${file_status} | DB: ${db_status}")
+        if [[ "$db_status" == OK* ]]; then
+            FULL_BACKUP_SITES+=("$label | ${root} | Files: ${file_status} | DB: ${db_status}")
+        else
+            FILES_BACKUP_SITES+=("$label | ${root} | Files: ${file_status} | DB: ${db_status}")
+        fi
         log_ok "✓ BACKUP DONE in ${duration}s | Files: ${file_status} | DB: ${db_status}"
         printf '  Backed up at: %s\n' "$backup_time"
     else
@@ -414,10 +419,16 @@ main() {
     log_ok " Run folder: ${run_dir}"
     log_ok "======================================================"
 
-    if ((${#SUCCESS_SITES[@]} > 0)); then
+    if ((${#FULL_BACKUP_SITES[@]} > 0)); then
         printf '\n'
-        log_ok "Successful backups:"
-        printf '%s\n' "${SUCCESS_SITES[@]}"
+        log_ok "Full backups:"
+        printf '%s\n' "${FULL_BACKUP_SITES[@]}"
+    fi
+
+    if ((${#FILES_BACKUP_SITES[@]} > 0)); then
+        printf '\n'
+        log_ok "Files backups:"
+        printf '%s\n' "${FILES_BACKUP_SITES[@]}"
     fi
 
     if ((${#FAILED_SITES[@]} > 0)); then
