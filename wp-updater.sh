@@ -26,13 +26,21 @@ for CONFIG in $WP_CONFIGS; do
         DOMAIN=$(grep -E "^\s*server_name" "$NGINX_CONF" | head -n 1 | awk '{print $2}' | tr -d ';')
     fi
 
+    if [ -z "$NGINX_CONF" ]; then
+        DEAD_SITES+=("$SITE_PATH | No Nginx config found in /etc/nginx/sites-enabled")
+        echo -e "${RED}[DEAD] $SITE_PATH (No Nginx config found). Skipping.${NC}"
+        continue
+    fi
+
     if [ -z "$DOMAIN" ] || [ "$DOMAIN" == "_" ]; then
+        DEAD_SITES+=("$SITE_PATH | Invalid or missing server_name in $NGINX_CONF")
+        echo -e "${RED}[DEAD] $SITE_PATH (Invalid or missing server_name). Skipping.${NC}"
         continue
     fi
 
     HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}" -L -m 5 "http://$DOMAIN")
     if [ "$HTTP_STATUS" -eq 000 ] || [ "$HTTP_STATUS" -ge 500 ]; then
-        DEAD_SITES+=("$DOMAIN (Status: $HTTP_STATUS)")
+        DEAD_SITES+=("$DOMAIN | HTTP status $HTTP_STATUS")
         echo -e "${RED}[DEAD] $DOMAIN (Status: $HTTP_STATUS). Skipping.${NC}"
         continue
     fi
