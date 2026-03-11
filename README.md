@@ -128,11 +128,12 @@ Usage:
 ```
 
 Behavior:
-- Reads active `root` + `server_name` blocks from `/etc/nginx/sites-enabled`
-- Keeps only active roots under `/var/www`
+- Reads active `root`, `proxy_pass`, and `server_name` blocks from `/etc/nginx/sites-enabled`
+- Keeps only active roots under `/var/www` and resolves proxy-backed apps from exposed ports in `.env` files
 - Creates one run directory inside `BACKUP_BASE_DIR` and one subdirectory per active site
 - Stores `files.tar.gz` for every active root
 - If `wp-config.php` exists, extracts `DB_NAME` and stores a compressed MySQL dump
+- If an app has a local DB name in `.env`, stores a compressed MySQL dump for that app too
 - Keeps only the latest backup run directories and removes older ones automatically
 - Writes `backup-info.txt` metadata per site and prints success, failure, and skipped summaries
 

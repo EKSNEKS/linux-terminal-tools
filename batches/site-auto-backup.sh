@@ -123,7 +123,7 @@ collect_nginx_files() {
     fi
 }
 
-collect_domain_root_pairs() {
+collect_domain_targets() {
     local -a nginx_files=()
 
     collect_nginx_files nginx_files || return 1
@@ -138,16 +138,24 @@ collect_domain_root_pairs() {
             tmp = str
             return gsub(ch, "", tmp)
         }
-        function flush_block() {
+        function flush_block(   i, proxy) {
             if (!in_server) {
                 return
             }
-            if (root != "" && domain_count > 0) {
-                for (i = 1; i <= domain_count; i++) {
-                    print root "|" domains[i] "|" FILENAME
+            if (domain_count > 0) {
+                if (root != "") {
+                    for (i = 1; i <= domain_count; i++) {
+                        print "root|" root "|" domains[i] "|" FILENAME
+                    }
+                }
+                for (proxy in proxies) {
+                    for (i = 1; i <= domain_count; i++) {
+                        print "proxy|" proxy "|" domains[i] "|" FILENAME
+                    }
                 }
             }
             delete domains
+            delete proxies
             domain_count = 0
             root = ""
         }
@@ -170,6 +178,11 @@ collect_domain_root_pairs() {
                 if (r ~ /^\//) {
                     root = r
                 }
+            } else if ($0 ~ /^[[:space:]]*proxy_pass[[:space:]]+/) {
+                p = clean($2)
+                if (p != "") {
+                    proxies[p] = 1
+                }
             }
 
             depth += count_char($0, "{")
@@ -187,10 +200,138 @@ collect_domain_root_pairs() {
     ' "${nginx_files[@]}" | sort -u
 }
 
+extract_proxy_port() {
+    local proxy_target="$1"
+
+    printf '%s\n' "$proxy_target" \
+        | LC_ALL=C sed -nE 's#^[[:space:]]*https?://[^/:]+:([0-9]+)(/.*)?$#\1#p' \
+        | head -n 1
+}
+
+find_app_root_by_port() {
+    local port="$1"
+    local env_file
+    local port_regex
+
+    port_regex="^(APP_EXPOSE_PORT|PORT)[[:space:]]*=[[:space:]]*['\"]?${port}['\"]?[[:space:]]*$"
+
+    while IFS= read -r -d '' env_file; do
+        if LC_ALL=C grep -Eq "$port_regex" "$env_file" 2>/dev/null; then
+            dirname "$env_file"
+            return 0
+        fi
+    done < <(find /var/www -type f -name '.env*' -print0 2>/dev/null)
+
+    return 1
+}
+
+resolve_target_root() {
+    local target_kind="$1"
+    local target_value="$2"
+    local proxy_port
+
+    case "$target_kind" in
+        root)
+            printf '%s\n' "$target_value"
+            return 0
+            ;;
+        proxy)
+            proxy_port="$(extract_proxy_port "$target_value")"
+            if [[ -z "$proxy_port" ]]; then
+                return 1
+            fi
+            find_app_root_by_port "$proxy_port"
+            return $?
+            ;;
+    esac
+
+    return 1
+}
+
 extract_wp_db_name() {
     local wp_config="$1"
 
     LC_ALL=C sed -nE "s/^[[:space:]]*define[[:space:]]*\([[:space:]]*['\"]DB_NAME['\"][[:space:]]*,[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*\)[[:space:]]*;?.*$/\1/p" "$wp_config" | head -n 1
+}
+
+extract_env_value() {
+    local env_file="$1"
+    local env_key="$2"
+
+    LC_ALL=C sed -nE "s/^[[:space:]]*${env_key}[[:space:]]*=[[:space:]]*['\"]?([^'\"]+)['\"]?[[:space:]]*$/\\1/p" "$env_file" | head -n 1
+}
+
+extract_app_db_name() {
+    local app_root="$1"
+    local env_file db_name database_url
+    local -a env_files=(
+        "$app_root/.env"
+        "$app_root/.env.local"
+        "$app_root/.env.production"
+        "$app_root/.env.development"
+    )
+    local -a db_keys=(
+        "DB_DATABASE"
+        "DB_NAME"
+        "DATABASE_NAME"
+        "MYSQL_DATABASE"
+        "MARIADB_DATABASE"
+        "POSTGRES_DB"
+        "PGDATABASE"
+    )
+
+    for env_file in "${env_files[@]}"; do
+        [[ -f "$env_file" ]] || continue
+        for env_key in "${db_keys[@]}"; do
+            db_name="$(extract_env_value "$env_file" "$env_key")"
+            if [[ -n "$db_name" ]]; then
+                printf '%s\n' "$db_name"
+                return 0
+            fi
+        done
+
+        database_url="$(extract_env_value "$env_file" "DATABASE_URL")"
+        if [[ -n "$database_url" ]]; then
+            db_name="$(printf '%s\n' "$database_url" | LC_ALL=C sed -nE 's#^[^/]+//[^/]+/([^?]+).*$#\1#p' | head -n 1)"
+            if [[ -n "$db_name" ]]; then
+                printf '%s\n' "$db_name"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+extract_app_db_host() {
+    local app_root="$1"
+    local env_file db_host
+    local -a env_files=(
+        "$app_root/.env"
+        "$app_root/.env.local"
+        "$app_root/.env.production"
+        "$app_root/.env.development"
+    )
+    local -a host_keys=(
+        "DB_HOST"
+        "DATABASE_HOST"
+        "MYSQL_HOST"
+        "POSTGRES_HOST"
+        "PGHOST"
+    )
+
+    for env_file in "${env_files[@]}"; do
+        [[ -f "$env_file" ]] || continue
+        for env_key in "${host_keys[@]}"; do
+            db_host="$(extract_env_value "$env_file" "$env_key")"
+            if [[ -n "$db_host" ]]; then
+                printf '%s\n' "$db_host"
+                return 0
+            fi
+        done
+    done
+
+    return 1
 }
 
 write_metadata() {
@@ -274,6 +415,7 @@ backup_site() {
     local label safe_label site_dir files_archive metadata_file
     local app_type="app"
     local db_name=""
+    local db_host=""
     local db_archive=""
     local db_status="Not applicable"
     local file_status="FAILED"
@@ -334,6 +476,26 @@ backup_site() {
                 status_ok=0
             fi
         fi
+    else
+        db_name="$(extract_app_db_name "$root" || true)"
+        db_host="$(extract_app_db_host "$root" || true)"
+
+        if [[ -n "$db_name" ]]; then
+            if [[ -n "$db_host" && "$db_host" != "localhost" && "$db_host" != "127.0.0.1" ]]; then
+                db_status="Not applicable (external DB host: ${db_host})"
+            elif ! database_exists "$db_name"; then
+                db_status="FAILED (database ${db_name} not found)"
+                status_ok=0
+            else
+                db_archive="${site_dir}/${db_name}.sql.gz"
+                if "$MYSQLDUMP_BIN" -u "$DB_USER" "$db_name" | gzip -c > "$db_archive"; then
+                    db_status="OK (${db_name})"
+                else
+                    db_status="FAILED (mysqldump error for ${db_name})"
+                    status_ok=0
+                fi
+            fi
+        fi
     fi
 
     write_metadata "$metadata_file" "$backup_time" "$root" "$domains" "$nginx_conf" "$app_type" "$files_archive" "$db_name" "$db_archive"
@@ -359,7 +521,7 @@ backup_site() {
 main() {
     local global_start global_end total_time
     local run_stamp run_dir
-    local pair root domain source
+    local target_kind target_value root domain source source_label
     local domains_csv
 
     print_header
@@ -374,8 +536,24 @@ main() {
         return 1
     fi
 
-    while IFS='|' read -r root domain source; do
-        [[ -z "$root" || -z "$domain" || -z "$source" ]] && continue
+    while IFS='|' read -r target_kind target_value domain source; do
+        [[ -z "$target_kind" || -z "$target_value" || -z "$domain" || -z "$source" ]] && continue
+
+        root="$(resolve_target_root "$target_kind" "$target_value" || true)"
+        if [[ -z "$root" ]]; then
+            if [[ "$target_kind" == "proxy" ]]; then
+                SKIPPED_SITES+=("$domain | Proxy target ${target_value} could not be mapped to a /var/www app | Source: $source")
+            else
+                SKIPPED_SITES+=("$domain | Unresolved target ${target_value} | Source: $source")
+            fi
+            continue
+        fi
+
+        if [[ "$target_kind" == "proxy" ]]; then
+            source_label="${source} | proxy_pass ${target_value}"
+        else
+            source_label="$source"
+        fi
 
         if [[ "$root" != /var/www/* && "$root" != "/var/www" ]]; then
             SKIPPED_SITES+=("$root | Outside /var/www | Domains: $domain")
@@ -385,7 +563,7 @@ main() {
         if [[ -z "${ROOT_SEEN[$root]:-}" ]]; then
             ROOT_SEEN[$root]=1
             ROOT_DOMAINS[$root]="$domain"
-            ROOT_SOURCE[$root]="$source"
+            ROOT_SOURCE[$root]="$source_label"
             continue
         fi
 
@@ -394,7 +572,11 @@ main() {
             *,"$domain",*) ;;
             *) ROOT_DOMAINS[$root]="${domains_csv},${domain}" ;;
         esac
-    done < <(collect_domain_root_pairs)
+        case "${ROOT_SOURCE[$root]}" in
+            *"$source_label"*) ;;
+            *) ROOT_SOURCE[$root]="${ROOT_SOURCE[$root]} ; ${source_label}" ;;
+        esac
+    done < <(collect_domain_targets)
 
     if ((${#ROOT_SEEN[@]} == 0)); then
         log_warn "No active Nginx roots found under /var/www."
@@ -402,7 +584,7 @@ main() {
     fi
 
     log_info "Backup directory: ${run_dir}"
-    log_info "Detected ${#ROOT_SEEN[@]} active root(s) from Nginx under /var/www."
+    log_info "Detected ${#ROOT_SEEN[@]} active site/app path(s) from Nginx under /var/www."
 
     while IFS= read -r root; do
         backup_site "$root" "${ROOT_DOMAINS[$root]}" "${ROOT_SOURCE[$root]}" "$run_dir"
