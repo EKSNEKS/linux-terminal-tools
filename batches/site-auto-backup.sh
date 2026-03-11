@@ -89,7 +89,9 @@ database_exists() {
 }
 
 sanitize_name() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]._- ' '_' | tr ' ' '_'
+    printf '%s' "$1" \
+        | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+        | LC_ALL=C sed 's/[^[:alnum:]._-]/_/g'
 }
 
 primary_domain() {
@@ -187,12 +189,7 @@ collect_domain_root_pairs() {
 extract_wp_db_name() {
     local wp_config="$1"
 
-    awk '
-        match($0, /define[[:space:]]*\([[:space:]]*["\047]DB_NAME["\047][[:space:]]*,[[:space:]]*["\047]([^"\047]+)["\047][[:space:]]*\)/, m) {
-            print m[1]
-            exit
-        }
-    ' "$wp_config"
+    LC_ALL=C sed -nE "s/^[[:space:]]*define[[:space:]]*\([[:space:]]*['\"]DB_NAME['\"][[:space:]]*,[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*\)[[:space:]]*;?.*$/\1/p" "$wp_config" | head -n 1
 }
 
 write_metadata() {
