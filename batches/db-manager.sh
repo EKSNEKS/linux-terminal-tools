@@ -118,6 +118,37 @@ backup_database() {
     error "Backup failed for '$db_name'."; return 1
 }
 
+# ─── Import Source Picker ─────────────────────────────────────────────────────
+do_import_into() {
+    local target_db="$1" source_choice dump_file src_db
+
+    log ""
+    log "Import source:"
+    log "  1) SQL dump file"
+    log "  2) Copy from existing database"
+    read -r -p "Choice [1-2]: " source_choice
+
+    case "$source_choice" in
+        1)
+            read -r -p "Dump file path [${DEFAULT_IMPORT_PATH}]: " dump_file
+            dump_file="${dump_file:-$DEFAULT_IMPORT_PATH}"
+            [[ ! -f "$dump_file" ]] && { error "File not found: $dump_file"; return 1; }
+            confirm "Import '${dump_file}' into '${target_db}'?" || { log "Aborted."; return 1; }
+            log "Importing..."
+            if mysql_exec_db "$target_db" < "$dump_file"; then ok "Import successful."; else error "Import failed."; return 1; fi
+            ;;
+        2)
+            choose_database || return 1
+            src_db="$_DB_SELECTION"
+            [[ "$src_db" == "$target_db" ]] && { error "Source and target databases cannot be the same."; return 1; }
+            confirm "Copy '${src_db}' -> '${target_db}'?" || { log "Aborted."; return 1; }
+            log "Copying '${src_db}' -> '${target_db}'..."
+            if _mysqldump "$src_db" | mysql_exec_db "$target_db"; then ok "Copy successful."; else error "Copy failed."; return 1; fi
+            ;;
+        *) error "Invalid choice."; return 1 ;;
+    esac
+}
+
 # ─── Header ───────────────────────────────────────────────────────────────────
 print_header() {
     printf '%b\n' "${CYAN}______  ____________________________________________________${NC}"
@@ -168,13 +199,9 @@ EOF
         ok "Created '$db_name'."
     fi
 
-    read -r -p "Import a SQL dump now? [y/N]: " do_import
+    read -r -p "Import data now? [y/N]: " do_import
     if [[ "$do_import" =~ ^[Yy]$ ]]; then
-        read -r -p "Dump file path [${DEFAULT_IMPORT_PATH}]: " dump_file
-        dump_file="${dump_file:-$DEFAULT_IMPORT_PATH}"
-        if [[ ! -f "$dump_file" ]]; then error "File not found: $dump_file"; return; fi
-        log "Importing '${dump_file}' into '${db_name}'..."
-        if mysql_exec_db "$db_name" < "$dump_file"; then ok "Import successful."; else error "Import failed."; fi
+        do_import_into "$db_name" || true
     fi
 }
 
@@ -206,15 +233,10 @@ export_database() {
 }
 
 import_into_existing() {
-    local db_name dump_file
+    local db_name
     choose_database || return; db_name="$_DB_SELECTION"
-    read -r -p "SQL dump file path [${DEFAULT_IMPORT_PATH}]: " dump_file
-    dump_file="${dump_file:-$DEFAULT_IMPORT_PATH}"
-    [[ ! -f "$dump_file" ]] && { error "File not found: $dump_file"; return; }
     if confirm "Backup '$db_name' before importing?"; then backup_database "$db_name" || return; fi
-    confirm "Import '${dump_file}' into '${db_name}'?" || { log "Aborted."; return; }
-    log "Importing..."
-    if mysql_exec_db "$db_name" < "$dump_file"; then ok "Import successful."; else error "Import failed."; fi
+    do_import_into "$db_name" || true
 }
 
 backup_single() {
