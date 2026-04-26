@@ -4,7 +4,8 @@ set -u
 set -o pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-DB_USER="${DB_USER:-missiria}"
+DB_USER="${DB_USER:-root}"
+DB_PASS="${DB_PASS:-}"
 MYSQL_BIN="${MYSQL_BIN:-mysql}"
 MYSQLDUMP_BIN="${MYSQLDUMP_BIN:-mysqldump}"
 DEFAULT_BACKUP_DIR="${DEFAULT_BACKUP_DIR:-/tmp}"
@@ -47,8 +48,21 @@ quote_identifier() {
     printf '`%s`' "$v"
 }
 
-mysql_exec()    { "$MYSQL_BIN" -u "$DB_USER" "$@"; }
-mysql_exec_db() { local db="$1"; shift; "$MYSQL_BIN" -u "$DB_USER" -D "$db" "$@"; }
+_mysql_auth() {
+    if [[ -n "$DB_PASS" ]]; then printf '%s' "-p${DB_PASS}"
+    else printf '%s' ""; fi
+}
+mysql_exec()    {
+    local pass_arg; pass_arg="$(_mysql_auth)"
+    if [[ -n "$pass_arg" ]]; then "$MYSQL_BIN" -u "$DB_USER" "$pass_arg" "$@"
+    else "$MYSQL_BIN" -u "$DB_USER" "$@"; fi
+}
+mysql_exec_db() {
+    local db="$1"; shift
+    local pass_arg; pass_arg="$(_mysql_auth)"
+    if [[ -n "$pass_arg" ]]; then "$MYSQL_BIN" -u "$DB_USER" "$pass_arg" -D "$db" "$@"
+    else "$MYSQL_BIN" -u "$DB_USER" -D "$db" "$@"; fi
+}
 
 database_exists() {
     local db_esc result
@@ -87,12 +101,18 @@ choose_database() {
 }
 
 # ─── Backup ───────────────────────────────────────────────────────────────────
+_mysqldump() {
+    local pass_arg; pass_arg="$(_mysql_auth)"
+    if [[ -n "$pass_arg" ]]; then "$MYSQLDUMP_BIN" -u "$DB_USER" "$pass_arg" "$@"
+    else "$MYSQLDUMP_BIN" -u "$DB_USER" "$@"; fi
+}
+
 backup_database() {
     local db_name="$1" ts backup_file
     ts="$(date +%Y%m%d_%H%M%S)"
     backup_file="${DEFAULT_BACKUP_DIR%/}/${db_name}_${ts}.sql"
     log "Creating backup: $backup_file"
-    if "$MYSQLDUMP_BIN" -u "$DB_USER" "$db_name" > "$backup_file"; then
+    if _mysqldump "$db_name" > "$backup_file"; then
         ok "Backup saved: $backup_file"; return 0
     fi
     error "Backup failed for '$db_name'."; return 1
@@ -178,7 +198,7 @@ export_database() {
     read -r -p "Export file path [${DEFAULT_EXPORT_PATH}]: " export_file
     export_file="${export_file:-$DEFAULT_EXPORT_PATH}"
     log "Exporting '${db_name}' to '${export_file}'..."
-    if "$MYSQLDUMP_BIN" -u "$DB_USER" "$db_name" > "$export_file"; then
+    if _mysqldump "$db_name" > "$export_file"; then
         ok "Exported '$db_name' -> $export_file"
     else
         error "Export failed."
@@ -218,7 +238,7 @@ backup_all() {
     for db_name in "${dbs[@]}"; do
         backup_file="${DEFAULT_BACKUP_DIR%/}/${db_name}_${ts}.sql"
         log "Backing up '$db_name'..."
-        if "$MYSQLDUMP_BIN" -u "$DB_USER" "$db_name" > "$backup_file"; then
+        if _mysqldump "$db_name" > "$backup_file"; then
             ok "  OK: $db_name -> $backup_file"; ok_count=$((ok_count + 1))
         else
             error "  FAILED: $db_name"; fail_count=$((fail_count + 1))
@@ -238,7 +258,7 @@ clone_database() {
     tmp="/tmp/${src}_clone_$(date +%Y%m%d_%H%M%S).sql"
 
     log "Dumping '$src'..."
-    "$MYSQLDUMP_BIN" -u "$DB_USER" "$src" > "$tmp" || { error "Dump failed."; rm -f "$tmp"; return; }
+    _mysqldump "$src" > "$tmp" || { error "Dump failed."; rm -f "$tmp"; return; }
     log "Creating '$dst'..."
     mysql_exec -e "CREATE DATABASE ${dst_q};" || { error "Create failed."; rm -f "$tmp"; return; }
     log "Importing into '$dst'..."
