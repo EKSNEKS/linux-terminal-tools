@@ -41,7 +41,7 @@ SRC_DB=""           # COPY only
 
 DB_NAME=""
 DB_DUMP=""          # NEW only: optional import dump
-WP_PREFIX="wp_"     # COPY only: URL migration prefix
+WP_PREFIX=""        # COPY only: detected after clone
 OLD_URL=""          # COPY only
 NEW_URL=""          # COPY only
 
@@ -228,10 +228,6 @@ intake_database() {
         ask "SQL dump to import after creation (blank = empty DB):"
         read -r DB_DUMP
     else
-        ask "WordPress table prefix [wp_]:"
-        read -r WP_PREFIX
-        WP_PREFIX="${WP_PREFIX:-wp_}"
-
         ask "FROM URL — source site [https://$SRC_DOMAIN]:"
         read -r OLD_URL
         OLD_URL="${OLD_URL:-https://$SRC_DOMAIN}"
@@ -354,7 +350,7 @@ print_summary() {
     [[ "$MODE" == "new" && -n "$DB_DUMP" ]] && printf '    DB dump       : %s\n' "$DB_DUMP"
     if [[ "$MODE" == "copy" ]]; then
         printf '    URL migrate   : %s  →  %s\n' "$OLD_URL" "$NEW_URL"
-        printf '    WP prefix     : %s\n' "$WP_PREFIX"
+        printf '    WP prefix     : %s\n' "(auto-detect after clone)"
     fi
 
     echo ""
@@ -601,10 +597,61 @@ EOF
     rm -f "$tmp_dump"
 
     if [[ -n "$OLD_URL" && -n "$NEW_URL" ]]; then
+        _pick_wp_prefix
         _db_migrate_urls
     else
         warn "URL migration skipped (no URLs provided)."
     fi
+}
+
+_pick_wp_prefix() {
+    info "Detecting WordPress table prefixes in '$DB_NAME' ..."
+    local db_esc; db_esc="$(sql_escape_literal "$DB_NAME")"
+
+    local -a detected=()
+    while IFS= read -r tbl; do
+        [[ -n "$tbl" ]] && detected+=("${tbl%options}")
+    done < <(mysql_exec_db "$DB_NAME" -N -s -e \
+        "SELECT TABLE_NAME FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA='${db_esc}' AND TABLE_NAME LIKE '%options'
+         ORDER BY TABLE_NAME;" 2>/dev/null)
+
+    if (( ${#detected[@]} == 0 )); then
+        warn "No '*_options' table found — cannot auto-detect prefix."
+    else
+        echo ""
+        printf '%b\n' "  ${CYAN}Prefixes found in '$DB_NAME':${NC}"
+        for i in "${!detected[@]}"; do
+            printf '%b\n' "    ${BLUE}[$((i+1))]${NC} ${detected[$i]}"
+        done
+        echo ""
+
+        if (( ${#detected[@]} == 1 )); then
+            ask "Use detected prefix '${detected[0]}'? [Y/n]:"
+            read -r _ans
+            if [[ "${_ans,,}" != "n" ]]; then
+                WP_PREFIX="${detected[0]}"
+                ok "WP prefix set to: $WP_PREFIX"
+                return
+            fi
+        else
+            ask "Select prefix number (or press Enter to type custom):"
+            read -r _pick
+            if [[ "$_pick" =~ ^[0-9]+$ ]]; then
+                local idx=$(( _pick - 1 ))
+                if (( idx >= 0 && idx < ${#detected[@]} )); then
+                    WP_PREFIX="${detected[$idx]}"
+                    ok "WP prefix set to: $WP_PREFIX"
+                    return
+                fi
+            fi
+        fi
+    fi
+
+    ask "Enter WordPress table prefix manually (e.g., wp_):"
+    read -r WP_PREFIX
+    WP_PREFIX="${WP_PREFIX:-wp_}"
+    ok "WP prefix set to: $WP_PREFIX"
 }
 
 _db_migrate_urls() {
