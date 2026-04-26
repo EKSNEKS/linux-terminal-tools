@@ -276,6 +276,37 @@ intake_options() {
     SKIP_CERTBOT="${SKIP_CERTBOT:-n}"
 }
 
+intake_mysql_admin() {
+    echo ""
+    printf '%b\n' "  ${CYAN}── MYSQL ADMIN ───────────────────────────────────────${NC}"
+
+    if [[ -n "$MYSQL_ADMIN_PASS" ]]; then
+        printf '%b\n' "  ${GREEN}✅  MySQL admin password already set via env (MYSQL_ADMIN_PASS).${NC}"
+        return
+    fi
+
+    local attempts=0
+    while true; do
+        (( attempts++ ))
+        printf '%b' "  ${YELLOW}▶ Password for MySQL admin user '${MYSQL_ADMIN_USER}' (blank = socket/no-password): ${NC}"
+        read -r -s MYSQL_ADMIN_PASS
+        printf '\n'
+
+        if MYSQL_PWD="$MYSQL_ADMIN_PASS" "$MYSQL_BIN" -u "$MYSQL_ADMIN_USER" -e "SELECT 1;" &>/dev/null; then
+            printf '%b\n' "  ${GREEN}✅  MySQL admin connection OK.${NC}"
+            break
+        fi
+
+        printf '%b\n' "  ${RED}❌  Cannot connect as '${MYSQL_ADMIN_USER}' — wrong password or user.${NC}"
+        MYSQL_ADMIN_PASS=""
+
+        if (( attempts >= 3 )); then
+            printf '%b\n' "  ${RED}❌  Too many failed attempts. Aborting.${NC}"
+            exit 1
+        fi
+    done
+}
+
 print_summary() {
     echo ""
     printf '%b\n' "${BLUE}════════════════════════════════════════════════════════════${NC}"
@@ -897,6 +928,7 @@ main() {
     intake_database
     intake_email
     intake_options
+    intake_mysql_admin
 
     # ── SUMMARY & CONFIRM ─────────────────────────────────────
     print_summary
