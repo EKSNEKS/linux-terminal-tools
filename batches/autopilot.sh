@@ -44,6 +44,7 @@ DB_DUMP=""          # NEW only: optional import dump
 WP_PREFIX=""        # COPY only: detected after clone
 OLD_URL=""          # COPY only
 NEW_URL=""          # COPY only
+GIT_REPO_URL=""     # COPY only: new git remote origin URL
 
 EMAIL_PREFIX="contact"
 EMAIL_FULL_USER=""
@@ -184,6 +185,22 @@ intake_copy_source() {
     ask "Source web root [$default_src]:"
     read -r SRC_WEB_ROOT
     SRC_WEB_ROOT="${SRC_WEB_ROOT:-$default_src}"
+
+    # New git repository URL
+    local old_git_url=""
+    if [[ -d "$SRC_WEB_ROOT/.git" ]]; then
+        old_git_url="$(git -C "$SRC_WEB_ROOT" remote get-url origin 2>/dev/null || true)"
+    fi
+    echo ""
+    printf '%b\n' "  ${CYAN}── GIT REPOSITORY ────────────────────────────────────${NC}"
+    if [[ -n "$old_git_url" ]]; then
+        info "Current remote URL: $old_git_url"
+    else
+        info "No git repository detected in source (or no 'origin' remote)."
+    fi
+    ask "New repository URL for copied project (blank = skip):"
+    read -r GIT_REPO_URL
+    [[ -n "$GIT_REPO_URL" ]] && info "New remote URL: $GIT_REPO_URL" || info "Git remote: will not be changed."
 
     # Source database — list existing DBs
     local -a db_list=()
@@ -351,6 +368,11 @@ print_summary() {
     if [[ "$MODE" == "copy" ]]; then
         printf '    URL migrate   : %s  →  %s\n' "$OLD_URL" "$NEW_URL"
         printf '    WP prefix     : %s\n' "(auto-detect after clone)"
+        if [[ -n "$GIT_REPO_URL" ]]; then
+            printf '    Git remote    : %s\n' "$GIT_REPO_URL"
+        else
+            printf '    Git remote    : %s\n' "(unchanged)"
+        fi
     fi
 
     echo ""
@@ -415,6 +437,17 @@ exec_files() {
             info "Updating wp-config.php → DB_NAME=$DB_NAME ..."
             sed -i "s/define[[:space:]]*([[:space:]]*'DB_NAME'[[:space:]]*,[[:space:]]*'[^']*'/define('DB_NAME', '$DB_NAME'/" "$wp_config"
             ok "wp-config.php DB_NAME updated."
+        fi
+
+        if [[ -n "$GIT_REPO_URL" && -d "$WEB_ROOT/.git" ]]; then
+            info "Updating git remote origin → $GIT_REPO_URL ..."
+            if git -C "$WEB_ROOT" remote set-url origin "$GIT_REPO_URL" 2>&1; then
+                ok "Git remote origin updated."
+            else
+                warn "Could not update git remote — check manually: git -C $WEB_ROOT remote set-url origin <URL>"
+            fi
+        elif [[ -n "$GIT_REPO_URL" ]]; then
+            warn "No .git directory in $WEB_ROOT — cannot set remote URL."
         fi
     fi
 }
