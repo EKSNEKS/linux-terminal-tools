@@ -539,6 +539,7 @@ exec_files() {
 
         if [[ -n "$GIT_REPO_URL" && -d "$WEB_ROOT/.git" ]]; then
             info "Updating git remote origin → $GIT_REPO_URL ..."
+            git config --global --add safe.directory "$WEB_ROOT" 2>/dev/null || true
             if git -C "$WEB_ROOT" remote set-url origin "$GIT_REPO_URL" 2>&1; then
                 ok "Git remote origin updated."
             else
@@ -634,6 +635,61 @@ EOF
     ok "Nginx config written."
 }
 
+_cleanup_certbot_injections() {
+    local own_avail; own_avail="$(readlink -f "/etc/nginx/sites-available/$DOMAIN" 2>/dev/null)"
+    for cfg in /etc/nginx/sites-enabled/*; do
+        local real_cfg; real_cfg="$(readlink -f "$cfg" 2>/dev/null || echo "$cfg")"
+        [[ "$real_cfg" == "$own_avail" ]] && continue
+        grep -q "server_name[[:space:]].*\b${DOMAIN}\b" "$real_cfg" 2>/dev/null || continue
+        warn "Certbot injected '$DOMAIN' block into $(basename "$real_cfg") — removing..."
+        python3 - "$real_cfg" "$DOMAIN" <<'PYEOF'
+import sys
+
+filepath, domain = sys.argv[1], sys.argv[2]
+with open(filepath) as f:
+    content = f.read()
+
+def strip_domain_blocks(text, domain):
+    out, i = [], 0
+    while i < len(text):
+        idx = text.find('server', i)
+        if idx == -1:
+            out.append(text[i:]); break
+        brace = text.find('{', idx)
+        if brace == -1:
+            out.append(text[i:]); break
+        # skip non-server-block 'server' occurrences
+        between = text[idx+6:brace]
+        if between.strip() and not between.strip() == '':
+            non_ws = between.strip()
+            if non_ws and non_ws[0] not in ('{', '\n', '\r', ' ', '\t'):
+                out.append(text[i:idx+1]); i = idx+1; continue
+        out.append(text[i:idx])
+        depth, j = 0, brace
+        while j < len(text):
+            c = text[j]
+            if c == '{': depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    block = text[idx:j+1]
+                    if domain not in block:
+                        out.append(block)
+                    i = j + 1; break
+            j += 1
+        else:
+            out.append(text[i:]); break
+    return ''.join(out).rstrip() + '\n'
+
+result = strip_domain_blocks(content, domain)
+with open(filepath, 'w') as f:
+    f.write(result)
+PYEOF
+        ok "Removed stray certbot block from $(basename "$real_cfg")"
+    done
+    nginx -t &>/dev/null && systemctl reload nginx || true
+}
+
 exec_certbot() {
     section "3/7" "CERTBOT SSL"
 
@@ -654,6 +710,8 @@ exec_certbot() {
     else
         warn "Certbot had issues — run manually: certbot --nginx -d $DOMAIN -d www.$DOMAIN"
     fi
+
+    _cleanup_certbot_injections
 }
 
 exec_database() {
@@ -710,7 +768,7 @@ _db_clone() {
 
     local tmp_dump="/tmp/autopilot_${SRC_DB}_$(date +%s).sql"
     info "Exporting '$SRC_DB' ..."
-    if ! MYSQL_PWD="$DB_PASS" "$MYSQLDUMP_BIN" -u "$DB_USER" "$SRC_DB" > "$tmp_dump"; then
+    if ! MYSQL_PWD="$MYSQL_ADMIN_PASS" "$MYSQLDUMP_BIN" -u "$MYSQL_ADMIN_USER" "$SRC_DB" > "$tmp_dump"; then
         fail "Export of '$SRC_DB' failed."
         return
     fi
