@@ -8,9 +8,7 @@ LOG_FILE="/var/log/nginx_monitor.log"
 
 # 🆕 THE WHITELIST: Domains allowed to have low word counts (Coming Soon / Landing Pages)
 ALLOWED_SHORT_DOMAINS=(
-    "eksleks.com"
     "www.eksleks.com"
-    "sabrina-missiria-group.com"
     "www.sabrina-missiria-group.com"
 )
 
@@ -27,7 +25,7 @@ echo -e "${BLUE}🚀 STARTING PRO NGINX DOMAIN MONITOR V3${NC}"
 echo -e "${BLUE}=================================================================${NC}"
 
 # --- PRO DOMAIN EXTRACTION ---
-DOMAINS=$(awk '/^[ \t]*server_name/ {for (i=2; i<=NF; i++) { gsub(/;/, "", $i); print $i } }' "$NGINX_PATH"/* | sort -u)
+DOMAINS=$(awk '/^[ \t]*server_name/ {for (i=2; i<=NF; i++) { gsub(/;/, "", $i); print $i } }' "$NGINX_PATH"/* | grep "^www\." | sort -u)
 
 # Prepare Report Variables
 REPORT_EMAIL=""
@@ -40,6 +38,11 @@ printf "%-35s | %-8s | %-8s | %-30s\n" "-----------------------------------" "--
 
 for domain in $DOMAINS; do
     if [[ "$domain" == "_" || "$domain" == "localhost" || "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || -z "$domain" || "$domain" == "~"* ]]; then
+        continue
+    fi
+
+    # Skip static asset CDN subdomains — root 404 is correct, no HTML to count
+    if [[ "$domain" == static.* ]]; then
         continue
     fi
 
