@@ -67,8 +67,8 @@ for domain in $DOMAINS; do
 
     # CASE B: Active Site (200 OK)
     elif [ "$HTTP_STATUS" -eq 200 ]; then
-        RAW_TEXT=$(curl -s --max-time 10 "$PROTOCOL://$domain" | perl -0777 -pe 's/<script\b[^>]*>.*?<\/script>//igs; s/<style\b[^>]*>.*?<\/style>//igs; s/<[^>]+>//g' | tr '\n' ' ' | tr -s ' ')
-        
+        RAW_TEXT=$(curl -s --max-time 10 "$PROTOCOL://$domain" | perl -0777 -pe 's/<script\b[^>]*>.*?<\/script>//igs; s/<style\b[^>]*>.*?<\/style>//igs; s/<[^>]+>//g' | tr -d '\r' | tr '\n\t' '  ' | tr -s ' ' | sed 's/^ *//')
+
         WORD_COUNT=$(echo "$RAW_TEXT" | wc -w)
         SNIPPET=$(echo "$RAW_TEXT" | cut -d ' ' -f 1-5)
         

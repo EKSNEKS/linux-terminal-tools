@@ -246,17 +246,36 @@ while IFS= read -r path; do
         # Find which published posts link to this broken URL; return ID:slug pairs
         FULL_URL="https://www.${DOMAIN}${path}"
         SAFE=$(printf '%s' "$path" | sed "s/'/\\\\'/g; s/%/%%/g")
-        # Search for the path only inside href/src/action attributes to avoid
-        # false positives (e.g. wa.me/212661377106 matching search for /212661377106)
+        SAFE_TS=$(printf '%s' "${path%/}/" | sed "s/'/\\\\'/g; s/%/%%/g")
+        FULL_TS="${FULL_URL%/}/"
+        # Search: (1) href in post_content, (2) _menu_item_url in postmeta (nav menus),
+        # (3) href in custom meta_value fields — covers all common link storage locations.
         REFERRER_SLUGS=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -se \
-            "SELECT GROUP_CONCAT(DISTINCT CONCAT(ID, ':', post_name) ORDER BY ID SEPARATOR ' | ')
-             FROM ${PREFIX}posts
-             WHERE post_status='publish'
-               AND (post_content LIKE '%href=\"${SAFE}\"%'
-                    OR post_content LIKE \"%href='${SAFE}'%\"
-                    OR post_content LIKE '%href=\"${FULL_URL//\//\\/}\"%'
-                    OR post_content LIKE \"%href='${FULL_URL//\//\\/}'%\")
-             LIMIT 1;" 2>/dev/null)
+            "SELECT GROUP_CONCAT(DISTINCT src ORDER BY src SEPARATOR ' | ')
+             FROM (
+               SELECT CONCAT(ID, ':', post_name) AS src
+               FROM ${PREFIX}posts
+               WHERE post_status = 'publish'
+                 AND (post_content LIKE '%href=\"${SAFE}\"%'
+                      OR post_content LIKE \"%href='${SAFE}'%\"
+                      OR post_content LIKE '%href=\"${FULL_URL//\//\\/}\"%'
+                      OR post_content LIKE \"%href='${FULL_URL//\//\\/}'%\")
+               UNION
+               SELECT CONCAT('nav-menu:', pm.post_id) AS src
+               FROM ${PREFIX}postmeta pm
+               WHERE pm.meta_key = '_menu_item_url'
+                 AND pm.meta_value IN ('${SAFE}','${FULL_URL}','${SAFE_TS}','${FULL_TS}')
+               UNION
+               SELECT CONCAT(p.ID, ':', p.post_name) AS src
+               FROM ${PREFIX}postmeta pm
+               JOIN ${PREFIX}posts p ON p.ID = pm.post_id
+               WHERE p.post_status = 'publish'
+                 AND pm.meta_key NOT IN ('_edit_lock','_edit_last','_thumbnail_id',
+                       '_wp_attachment_metadata','_wp_page_template','session_tokens',
+                       '_yoast_wpseo_focuskw','_yoast_wpseo_linkdex','_yoast_wpseo_content_score')
+                 AND (pm.meta_value LIKE '%href=\"${SAFE}\"%'
+                      OR pm.meta_value LIKE \"%href='${SAFE}'%\")
+             ) combined;" 2>/dev/null)
         printf '%s\t%s\t%s\n' "$path" "$STATUS" "${REFERRER_SLUGS:-not_found_in_db}" >> "$BROKEN_FILE"
     fi
 done < <(sort -u "$QUEUE_FILE")
@@ -290,8 +309,11 @@ if [ "$BROKEN_COUNT" -gt 0 ]; then
                     pair="${pair// /}"
                     id="${pair%%:*}"
                     slug="${pair##*:}"
-                    [[ -n "$id" && "$id" =~ ^[0-9]+$ ]] && \
+                    if [[ -n "$id" && "$id" =~ ^[0-9]+$ ]]; then
                         EDIT_HINTS+="${id}:${slug} → /wp-admin/post.php?post=${id}&action=edit  "
+                    elif [[ "$id" == "nav-menu" ]]; then
+                        EDIT_HINTS+="nav-menu-item#${slug} → /wp-admin/nav-menus.php  "
+                    fi
                 done
             done <<< "$post_refs"
         else
@@ -336,6 +358,11 @@ if [ "$BROKEN_COUNT" -gt 0 ]; then
                             printf '%-80s\t%-6s\t%-30s\t%s%s\n' \
                                 "$path" "$status" "${id}:${slug}" \
                                 "https://www.${DOMAIN}/wp-admin/post.php?post=${id}&action=edit" \
+                                "$file_hint"
+                        elif [[ "$id" == "nav-menu" ]]; then
+                            printf '%-80s\t%-6s\t%-30s\t%s%s\n' \
+                                "$path" "$status" "nav-menu-item#${slug}" \
+                                "https://www.${DOMAIN}/wp-admin/nav-menus.php" \
                                 "$file_hint"
                         fi
                     done

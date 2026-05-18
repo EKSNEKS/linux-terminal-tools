@@ -85,3 +85,40 @@ else
     echo "   👉 INSTRUCTION: sudo mkdir -p $MAILDIR/{cur,new,tmp} && sudo chown -R $FULL_USER:$FULL_USER $HOME_DIR"
 fi
 echo "------------------------------------------------"
+
+# --- POSTFIX VIRTUAL_ALIAS_DOMAINS ---
+echo -e "\n📡 [POSTFIX VIRTUAL_ALIAS_DOMAINS]"
+if postconf virtual_alias_domains 2>/dev/null | grep -qw "$DOMAIN"; then
+    echo "✅ DOMAIN IN virtual_alias_domains: FOUND"
+else
+    echo "❌ DOMAIN IN virtual_alias_domains: MISSING"
+    echo "   👉 FIX: postconf -e \"virtual_alias_domains = \$(postconf -h virtual_alias_domains), $DOMAIN\" && postfix reload"
+fi
+
+# --- DOVECOT USERS ---
+echo -e "\n🔐 [DOVECOT PASSWD-FILE]"
+if grep -q "^${EMAIL}:" /etc/dovecot/users 2>/dev/null; then
+    echo "✅ DOVECOT ENTRY: FOUND"
+    if [ "$(stat -c '%G' /etc/dovecot/users)" = "dovecot" ]; then
+        echo "✅ DOVECOT USERS PERMISSIONS: OK (root:dovecot)"
+    else
+        echo "❌ DOVECOT USERS PERMISSIONS: WRONG (not root:dovecot)"
+        echo "   👉 FIX: chown root:dovecot /etc/dovecot/users && chmod 0640 /etc/dovecot/users"
+    fi
+else
+    echo "❌ DOVECOT ENTRY: MISSING"
+    echo "   👉 FIX: add entry to /etc/dovecot/users or run create_email $DOMAIN $USER_PREFIX"
+fi
+
+# --- MX RECORD ---
+echo -e "\n🌐 [DNS MX RECORD]"
+MX_RECORD=$(dig +short MX "$DOMAIN" 2>/dev/null | head -1)
+if [[ "$MX_RECORD" == *"mail.eksneks.com"* ]]; then
+    echo "✅ MX RECORD: $MX_RECORD"
+elif [[ -n "$MX_RECORD" ]]; then
+    echo "⚠️  MX RECORD: $MX_RECORD (not pointing to mail.eksneks.com)"
+else
+    echo "❌ MX RECORD: MISSING"
+    echo "   👉 FIX: Add in DNS/Cloudflare → MX $DOMAIN → mail.eksneks.com (priority 10)"
+fi
+echo "------------------------------------------------"
