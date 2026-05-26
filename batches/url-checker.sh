@@ -67,6 +67,9 @@ path_hint() {
     # Digit-only path = phone number stored without scheme (e.g. should be https://wa.me/XXXXXX)
     if [[ "$path" =~ ^/([0-9]{7,15})$ ]]; then
         echo "PHONE:${BASH_REMATCH[1]}"
+    # Path contains /./ = WP category_base is set to "/." instead of empty
+    elif [[ "$path" == *"/./"* ]]; then
+        echo "CATBASE"
     else
         echo ""
     fi
@@ -276,6 +279,20 @@ while IFS= read -r path; do
                  AND (pm.meta_value LIKE '%href=\"${SAFE}\"%'
                       OR pm.meta_value LIKE \"%href='${SAFE}'%\")
              ) combined;" 2>/dev/null)
+        # If no post/menu referrer found, check if broken URL is a term archive (category, tag, etc.)
+        if [[ -z "$REFERRER_SLUGS" ]]; then
+            LAST_SLUG=$(echo "$path" | sed 's|/$||' | rev | cut -d'/' -f1 | rev)
+            if [[ -n "$LAST_SLUG" && "$LAST_SLUG" != "." ]]; then
+                SAFE_SLUG=$(printf '%s' "$LAST_SLUG" | sed "s/'/\\\\'/g")
+                TERM_REF=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -se \
+                    "SELECT CONCAT('cat-', tt.taxonomy, ':', t.term_id, ':', t.slug)
+                     FROM ${PREFIX}terms t
+                     JOIN ${PREFIX}term_taxonomy tt ON t.term_id = tt.term_id
+                     WHERE t.slug = '${SAFE_SLUG}'
+                     LIMIT 1;" 2>/dev/null)
+                [[ -n "$TERM_REF" ]] && REFERRER_SLUGS="$TERM_REF"
+            fi
+        fi
         printf '%s\t%s\t%s\n' "$path" "$STATUS" "${REFERRER_SLUGS:-not_found_in_db}" >> "$BROKEN_FILE"
     fi
 done < <(sort -u "$QUEUE_FILE")
@@ -313,6 +330,10 @@ if [ "$BROKEN_COUNT" -gt 0 ]; then
                         EDIT_HINTS+="${id}:${slug} → /wp-admin/post.php?post=${id}&action=edit  "
                     elif [[ "$id" == "nav-menu" ]]; then
                         EDIT_HINTS+="nav-menu-item#${slug} → /wp-admin/nav-menus.php  "
+                    elif [[ "$id" =~ ^cat-(.+)$ ]]; then
+                        taxonomy="${BASH_REMATCH[1]}"
+                        term_id=$(echo "$pair" | cut -d: -f2)
+                        EDIT_HINTS+="category(${taxonomy})#${term_id}:${slug} → /wp-admin/edit-tags.php?tag_id=${term_id}&taxonomy=${taxonomy}  "
                     fi
                 done
             done <<< "$post_refs"
@@ -321,13 +342,14 @@ if [ "$BROKEN_COUNT" -gt 0 ]; then
         fi
         printf "  ${RED}%-55s${NC}  ${STATUS_COLOR}%-6s${NC}  ${BLUE}%s${NC}\n" \
             "$path" "$status" "$EDIT_HINTS"
-        # Warn when path is a bare phone number — stored without scheme in post content
         hint=$(path_hint "$path")
         if [[ "$hint" == PHONE:* ]]; then
             digits="${hint#PHONE:}"
             printf "  ${YELLOW}  ↳ External link stored as internal path. Fix in post content:${NC}\n"
             printf "  ${YELLOW}    href=\"/%-*s${NC}${YELLOW}\" → href=\"https://wa.me/%s\"${NC}\n" \
                 "${#digits}" "$digits" "$digits"
+        elif [[ "$hint" == "CATBASE" ]]; then
+            printf "  ${YELLOW}  ↳ Path has '/./' — WP category_base is set to '/.'. Fix: WP Admin → Settings → Permalinks → Category base → clear the field.${NC}\n"
         fi
     done < "$BROKEN_FILE"
 
@@ -363,6 +385,13 @@ if [ "$BROKEN_COUNT" -gt 0 ]; then
                             printf '%-80s\t%-6s\t%-30s\t%s%s\n' \
                                 "$path" "$status" "nav-menu-item#${slug}" \
                                 "https://www.${DOMAIN}/wp-admin/nav-menus.php" \
+                                "$file_hint"
+                        elif [[ "$id" =~ ^cat-(.+)$ ]]; then
+                            taxonomy="${BASH_REMATCH[1]}"
+                            term_id=$(echo "$pair" | cut -d: -f2)
+                            printf '%-80s\t%-6s\t%-30s\t%s%s\n' \
+                                "$path" "$status" "category(${taxonomy})#${term_id}:${slug}" \
+                                "https://www.${DOMAIN}/wp-admin/edit-tags.php?tag_id=${term_id}&taxonomy=${taxonomy}" \
                                 "$file_hint"
                         fi
                     done

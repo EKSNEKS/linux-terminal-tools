@@ -670,6 +670,9 @@ server {
     root $WEB_ROOT;
     index index.php index.html index.htm;
 
+    access_log /var/log/nginx/${DOMAIN}.access.log;
+    error_log  /var/log/nginx/${DOMAIN}.error.log;
+
     location / {
         try_files \$uri \$uri/ /index.php?\$args;
     }
@@ -758,8 +761,10 @@ exec_certbot() {
         return
     fi
 
-    info "Issuing SSL for $DOMAIN + www.$DOMAIN ..."
-    if certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --redirect; then
+    local certbot_email="${EMAIL_PREFIX}@${DOMAIN}"
+    info "Issuing SSL for $DOMAIN + www.$DOMAIN (contact: $certbot_email) ..."
+    if certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --redirect \
+        --non-interactive --agree-tos -m "$certbot_email"; then
         ok "SSL certificate issued and Nginx updated with HTTPS redirect!"
     else
         warn "Certbot had issues — run manually: certbot --nginx -d $DOMAIN -d www.$DOMAIN"
@@ -1200,14 +1205,23 @@ exec_varnish() {
     info "Backing up current Nginx config → ${avail}.pre-varnish.bak"
     [[ -f "$avail" ]] && cp "$avail" "${avail}.pre-varnish.bak"
 
-    info "Writing Varnish architecture (backend :8080, HTTPS → Varnish :6081) ..."
-    cat > "$avail" <<EOF
+    local cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    local key_path="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    local certs_exist=0
+    [[ -f "$cert_path" && -f "$key_path" ]] && certs_exist=1
+
+    if [[ "$certs_exist" -eq 1 ]]; then
+        info "Writing Varnish architecture (backend :8080, HTTPS :443 → Varnish :6081) ..."
+        cat > "$avail" <<EOF
 # ── BACKEND (PHP on port 8080) ────────────────────────────
 server {
     listen 8080;
     server_name $DOMAIN www.$DOMAIN;
     root $WEB_ROOT;
     index index.php index.html index.htm;
+
+    access_log /var/log/nginx/${DOMAIN}-backend.access.log;
+    error_log  /var/log/nginx/${DOMAIN}-backend.error.log;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$args;
@@ -1223,16 +1237,30 @@ server {
     location ~ /\.ht { deny all; }
 }
 
+# ── HTTP → HTTPS redirect ─────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN www.$DOMAIN;
+    return 301 https://\$host\$request_uri;
+
+    access_log /var/log/nginx/${DOMAIN}-http.access.log;
+    error_log  /var/log/nginx/${DOMAIN}-http.error.log;
+}
+
 # ── FRONT DOOR (HTTPS :443 → Varnish :6081) ──────────────
 server {
     listen [::]:443 ssl;
     listen 443 ssl;
     server_name $DOMAIN www.$DOMAIN;
 
-    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    access_log /var/log/nginx/${DOMAIN}.access.log;
+    error_log  /var/log/nginx/${DOMAIN}.error.log;
 
     location / {
         proxy_pass http://127.0.0.1:6081;
@@ -1244,6 +1272,53 @@ server {
     }
 }
 EOF
+    else
+        warn "SSL certs not found — writing HTTP-only Varnish config. Run certbot when DNS is ready."
+        cat > "$avail" <<EOF
+# ── BACKEND (PHP on port 8080) ────────────────────────────
+server {
+    listen 8080;
+    server_name $DOMAIN www.$DOMAIN;
+    root $WEB_ROOT;
+    index index.php index.html index.htm;
+
+    access_log /var/log/nginx/${DOMAIN}-backend.access.log;
+    error_log  /var/log/nginx/${DOMAIN}-backend.error.log;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php${PHP_VER}-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht { deny all; }
+}
+
+# ── HTTP → Varnish :6081 (no SSL yet) ────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN www.$DOMAIN;
+
+    access_log /var/log/nginx/${DOMAIN}.access.log;
+    error_log  /var/log/nginx/${DOMAIN}.error.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:6081;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
+        proxy_set_header X-Forwarded-Port  80;
+    }
+}
+EOF
+    fi
     ok "Varnish Nginx config written."
 
     local wp_config="$WEB_ROOT/wp-config.php"
